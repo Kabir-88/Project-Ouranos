@@ -1,67 +1,69 @@
 # Project Ouranos
 
-**Catch spacecraft sensor anomalies before they become mission risks.**
+**Terrain hazard detection for Mars rovers: spot sand and rocks before the wheels do.**
 
-Ouranos monitors spacecraft telemetry and flags abnormal sensor behaviour. For each telemetry channel, an LSTM network learns what normal looks like and predicts the next reading. When the actual reading drifts far from the prediction, Ouranos smooths the error and compares it to an adaptive threshold to decide whether it is an anomaly.
+*Praemonitus, praemunitus.* Forewarned is forearmed.
 
-The model is trained and evaluated on real, labelled telemetry from NASA's **SMAP** satellite and the **Curiosity (MSL)** rover, and benchmarked against a rolling z-score baseline. A **Streamlit** dashboard replays each channel and shows predictions, errors and alerts as they happen.
+## Problem
 
----
+Getting stuck has ended real Mars missions. Spirit became trapped in soft sand in 2009 and never drove free.
+Curiosity's wheels were damaged by sharp rocks. With a 4 to 24 minute one-way signal delay to Earth,
+a rover cannot wait for a human to inspect every step.
+
+## Scope
+
+- **Mission phase:** surface operations (rover driving)
+- **Target user:** rover drive planners on the ground, and the rover's onboard autonomy
+- **What it does:** reads each navigation camera frame, labels every pixel as soil, bedrock, sand or big rock,
+  scores the path directly ahead, and returns GO, CAUTION, STOP or HOLD with reasons
+- **Data:** real Curiosity NAVCAM images with expert labels from NASA JPL's AI4Mars dataset
+- **Not in scope:** steering or path planning, other rovers, orbital imagery, real hardware
 
 ## How it works
 
 ```
- telemetry ──► LSTM forecaster ──► prediction error ──► smoothing ──► adaptive threshold ──► alert
- (per channel)  (learns "normal")   |actual − predicted|   (EWMA)       (dynamic, per window)
+camera frame ──► quality checks ──► U-Net terrain map ──► path risk ──► GO / CAUTION / STOP / HOLD
+                 (blur, exposure,    (soil, bedrock,       (sand, big rock,
+                  corruption, loss)   sand, big rock)       uncertain pixels)
 ```
 
-1. **Forecast.** A separate LSTM is trained on each channel's nominal data. Given a window of recent readings (and command inputs), it predicts the next value.
-2. **Measure error.** At every timestep, the absolute difference between the prediction and the actual reading is recorded.
-3. **Smooth.** Raw errors are noisy, so they are smoothed with an exponentially weighted moving average. This stops one-off spikes from triggering alerts.
-4. **Threshold.** Instead of a fixed cutoff, the threshold adapts to the recent error distribution. It is chosen to best separate unusually large errors from normal ones, so each channel gets a threshold that fits its own noise level.
-5. **Flag.** Smoothed errors above the threshold are grouped into anomaly sequences. Small, isolated exceedances are pruned to cut down false positives.
+1. **Quality checks.** Lost, corrupted, blurry, dark or overexposed frames are rejected. The rover HOLDs
+   instead of trusting a bad image.
+2. **Terrain segmentation.** A U-Net CNN labels each pixel. Pixels where the model's confidence is low are
+   marked *unknown* and treated as unsafe.
+3. **Path risk.** The bottom-centre of the frame (the ground the rover is about to drive on) is scored by the
+   share of sand, big rock and unknown terrain.
+4. **Decision.** Risk thresholds give GO, CAUTION or STOP, with plain-language reasons such as
+   "sand ahead (18% of path)".
 
-## Dataset
+## Data
 
-Ouranos uses the public labelled telemetry dataset released by NASA JPL alongside [*Detecting Spacecraft Anomalies Using LSTMs and Nonparametric Dynamic Thresholding*](https://arxiv.org/abs/1802.04431) (Hundman et al., KDD 2018).
+[AI4Mars](https://data.nasa.gov/dataset/ai4mars-a-dataset-for-terrain-aware-autonomous-driving-on-mars)
+(Swan et al., CVPR Workshops 2021), NASA JPL. Curiosity NAVCAM images, 1024 × 1024, with per-pixel labels:
+soil, bedrock, sand, big rock, and unlabelled.
 
-| Spacecraft | Channels | Description |
-|---|---|---|
-| SMAP (Soil Moisture Active Passive) | 55 | Earth-observing satellite |
-| MSL (Mars Science Laboratory / Curiosity) | 27 | Mars rover |
+- **Train:** crowdsourced labels (at least 3 labellers, 2/3 agreement per pixel)
+- **Test:** 322 images with expert labels and 100% agreement (`masked-gold-min3-100agree`)
 
-Each channel has a train split (nominal behaviour) and a test split with expert-labelled anomaly windows. The data is anonymised: values are scaled and channel names are coded.
-
-## Baseline
-
-To show what the LSTM adds, every channel is also scored with a **rolling z-score** detector. It flags a point when it lies more than *k* standard deviations from the rolling mean of a trailing window. This is a simple, common method and gives a useful lower bound.
+Training uses the Kaggle mirror `yash92328/ai4mars-terrainaware-autonomous-driving-on-mars`.
 
 ## Evaluation
 
-Detection is scored per **anomaly event**, not per point:
+Both methods are scored on the expert-labelled test set, ignoring unlabelled pixels:
 
-- **True positive:** a predicted anomaly sequence overlaps a labelled anomaly window.
-- **False positive:** a predicted sequence overlaps no labelled window.
-- **False negative:** a labelled window with no overlapping prediction.
+- **Baseline:** per-pixel logistic regression on brightness and local texture (no deep learning)
+- **U-Net:** the CNN in `src/model.py`
 
-From these, Ouranos reports **precision**, **recall** and **F1** for each spacecraft and overall, for both the LSTM detector and the z-score baseline.
+Metrics: IoU per class, mean IoU and pixel accuracy. Sand IoU is the headline number.
 
-## Dashboard
+| Method | Sand IoU | Big rock IoU | Mean IoU | Pixel accuracy |
+|---|---|---|---|---|
+| Baseline | – | – | – | – |
+| U-Net | – | – | – | – |
 
-The Streamlit dashboard replays a chosen channel's test data step by step and shows:
-
-- actual telemetry alongside the LSTM's predictions
-- the raw and smoothed prediction error
-- the adaptive threshold as it changes
-- detected anomalies, alongside the ground-truth labelled windows
-- the same channel scored by the z-score baseline, for comparison
+*Filled in from `models/metrics.json` after training.*
 
 ## Getting started
-
-### Requirements
-
-- Python 3.10+
-- Dependencies in `requirements.txt` (TensorFlow/Keras or PyTorch, NumPy, pandas, scikit-learn, Streamlit, Plotly)
 
 ### Install
 
@@ -69,62 +71,65 @@ The Streamlit dashboard replays a chosen channel's test data step by step and sh
 git clone https://github.com/Kabir-88/Project-Ouranos.git
 cd Project-Ouranos
 python -m venv .venv
-source .venv/bin/activate        # Windows: .venv\Scripts\activate
+.venv\Scripts\activate          # macOS/Linux: source .venv/bin/activate
 pip install -r requirements.txt
 ```
 
-### Get the data
+### Train (on Kaggle, free GPU)
 
-Download the SMAP/MSL dataset and labels from the [telemanom repository](https://github.com/khundman/telemanom):
+1. Upload `notebooks/train_kaggle.ipynb` to Kaggle.
+2. Add the dataset `yash92328/ai4mars-terrainaware-autonomous-driving-on-mars` as input and turn on a GPU.
+3. Run all cells. Download `terrain_unet.keras`, `metrics.json` and `demo_frames.zip` from the output.
+4. Put `terrain_unet.keras` and `metrics.json` in `models/`, and unzip `demo_frames.zip` into `demo_frames/`.
 
-```bash
-curl -O https://s3-us-west-2.amazonaws.com/telemanom/data.zip
-unzip data.zip && rm data.zip
-curl -o data/labeled_anomalies.csv https://raw.githubusercontent.com/khundman/telemanom/master/labeled_anomalies.csv
-```
-
-This produces `data/train/`, `data/test/` and `data/labeled_anomalies.csv`.
-
-### Run
+### Run the dashboard
 
 ```bash
-# train a model for each channel and score the test set
-python train.py
-
-# score the rolling z-score baseline and compare
-python evaluate.py
-
-# launch the dashboard
 streamlit run app.py
 ```
+
+The dashboard replays real test frames as a live rover camera feed. Use the sidebar to play the feed,
+step through frames, compare with the expert label, and inject faults: blur, dark, overexposed,
+corrupted pixels or a lost frame.
+
+## Error handling
+
+| Problem | Response |
+|---|---|
+| Frame lost in transmission | HOLD, counted as lost |
+| Corrupted pixels | Frame rejected, HOLD |
+| Blurry, too dark or overexposed | Frame rejected, HOLD |
+| Model unsure about most of the frame | HOLD |
+| Model unsure about some pixels | Marked unknown, counted as risk |
+| Model or demo frames missing | Dashboard shows a clear setup message instead of crashing |
 
 ## Project structure
 
 ```
 Project-Ouranos/
-├── data/                  # SMAP/MSL telemetry and labels (not committed)
-├── models/                # trained per-channel LSTM weights
-├── ouranos/
-│   ├── model.py           # LSTM forecaster
-│   ├── errors.py          # error smoothing and adaptive thresholding
-│   ├── baseline.py        # rolling z-score detector
-│   └── metrics.py         # event-level precision / recall / F1
-├── train.py
-├── evaluate.py
-├── app.py                 # Streamlit dashboard
+├── notebooks/
+│   └── train_kaggle.ipynb  # data loading, U-Net training, baseline, evaluation, export
+├── src/
+│   ├── config.py           # classes, colours, thresholds
+│   ├── model.py            # U-Net architecture
+│   ├── inference.py        # frame quality checks, prediction, overlay
+│   ├── traverse.py         # path risk score and GO / CAUTION / STOP / HOLD
+│   └── stream.py           # replays frames as a live feed, fault injection
+├── models/                 # terrain_unet.keras, metrics.json
+├── demo_frames/            # expert-labelled test frames for the demo
+├── app.py                  # Streamlit dashboard
 └── requirements.txt
 ```
 
-## Results
+## Limitations
 
-| Method | Precision | Recall | F1 |
-|---|---|---|---|
-| LSTM + adaptive threshold | – | – | – |
-| Rolling z-score | – | – | – |
-
-*Fill this in after running `evaluate.py`.*
+- Trained on Curiosity images only, so other rovers and cameras may perform worse.
+- Labels describe terrain type, not soil strength. Sand is a proxy for "might get stuck".
+- The path region is a fixed box ahead of the rover, not a planned route.
+- Thresholds are set by hand, not tuned against real drive outcomes.
 
 ## Acknowledgements
 
-- Telemetry data and the original method: Hundman, K., Constantinou, V., Laporte, C., Colwell, I., & Soderstrom, T. (2018). *Detecting Spacecraft Anomalies Using LSTMs and Nonparametric Dynamic Thresholding.* KDD '18. [arXiv:1802.04431](https://arxiv.org/abs/1802.04431)
-- NASA JPL, for releasing the SMAP and MSL labelled anomaly data.
+- AI4Mars dataset: Swan, R. M., et al. (2021). *AI4MARS: A Dataset for Terrain-Aware Autonomous Driving on Mars.*
+  CVPR Workshops. NASA JPL.
+- Images: NASA/JPL-Caltech, Mars Science Laboratory (Curiosity).
