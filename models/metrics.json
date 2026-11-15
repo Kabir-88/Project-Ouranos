@@ -1,0 +1,16 @@
+{
+  "U-Net IoU soil": 0.8865262237538389,
+  "U-Net IoU bedrock": 0.8539459050212607,
+  "U-Net IoU sand": 0.819064405378406,
+  "U-Net IoU big rock": 0.038865272107411926,
+  "U-Net mean IoU": 0.6496004515652294,
+  "U-Net pixel accuracy": 0.9174473730251846,
+  "Baseline IoU soil": 0.3853643630352008,
+  "Baseline IoU bedrock": 0.3253356235459725,
+  "Baseline IoU sand": 0.4562378990497772,
+  "Baseline IoU big rock": 0.012077140337648729,
+  "Baseline mean IoU": 0.2947537564921498,
+  "Baseline pixel accuracy": 0.5547638032399741,
+  "test images": 322,
+  "train images": 7200
+}
